@@ -34,15 +34,13 @@ docker exec "$CONTAINER_NAME" rcon-cli save-all flush 2>/dev/null || docker exec
 echo "[*] Автоматическое обновление конфигурации DHSync на сервере..."
 UPDATE_CMD=("python3" "/data/scripts/update_dh_map.py" "--desc" "Карта дальнего горизонта (3000 блоков)")
 
-if [ -n "${GDRIVE_FILE_URL:-}" ]; then
-    UPDATE_CMD+=("--primary" "$GDRIVE_FILE_URL")
-fi
+GITHUB_LFS_URL="https://media.githubusercontent.com/media/bogdan446/minecraft-ny-2027/main/DistantHorizons.sqlite"
 
-if [ -n "${GITHUB_RELEASE_URL:-}" ]; then
-    UPDATE_CMD+=("--backup" "$GITHUB_RELEASE_URL")
-else
-    # По умолчанию используем прямую постоянную ссылку на файл в GitHub LFS репозитории
-    UPDATE_CMD+=("--backup" "https://media.githubusercontent.com/media/bogdan446/minecraft-ny-2027/main/DistantHorizons.sqlite")
+# GitHub LFS является основным высокоскоростным источником (прямой поток байтов без капч)
+UPDATE_CMD+=("--primary" "$GITHUB_LFS_URL")
+
+if [ -n "${GDRIVE_FILE_URL:-}" ]; then
+    UPDATE_CMD+=("--backup" "$GDRIVE_FILE_URL")
 fi
 
 docker exec "$CONTAINER_NAME" "${UPDATE_CMD[@]}"
