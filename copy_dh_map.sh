@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-# 0. Окружение: гарантируем доступность git-lfs и бинарников в PATH
+# 0. Окружение
 export PATH="$HOME/.local/bin:$PATH"
 
-# Настройки контейнера и путей
 CONTAINER_NAME="mc-ny2027-fabric"
 SRC_SQLITE="/data/world/data/DistantHorizons.sqlite"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,13 +12,13 @@ DEST_FILE="${DEST_DIR}/DistantHorizons.sqlite"
 REPO_HTTPS="https://github.com/bogdan446/minecraft-ny-2027.git"
 REPO_SSH="git@github.com:bogdan446/minecraft-ny-2027.git"
 
-# Подгрузка локального .env при наличии (например, GITHUB_TOKEN=ghp_...)
+# Подгрузка локального .env при наличии
 if [ -f "${DEST_DIR}/.env" ]; then
     # shellcheck disable=SC1091
     source "${DEST_DIR}/.env"
 fi
 
-echo "=== Экспорт Distant Horizons SQLite и отправка в GitHub ==="
+echo "=== Экспорт Distant Horizons SQLite, обновление DHSync и отправка в GitHub ==="
 
 # 1. Проверяем, запущен ли контейнер
 if ! docker ps --format '{{.Names}}' | grep -qw "$CONTAINER_NAME"; then
@@ -27,15 +26,32 @@ if ! docker ps --format '{{.Names}}' | grep -qw "$CONTAINER_NAME"; then
     exit 1
 fi
 
-# 2. Вызываем save-all через RCON, чтобы сбросить свежие чанки из памяти на диск
+# 2. Вызываем save-all через RCON
 echo "[*] Сохранение состояния мира (save-all)..."
 docker exec "$CONTAINER_NAME" rcon-cli save-all flush 2>/dev/null || docker exec "$CONTAINER_NAME" rcon-cli save-all 2>/dev/null || true
 
-# 3. Копируем файл из контейнера в рабочую директорию
+# 3. Автоматическое обновление метаданных DHSync на сервере (размер, SHA-256, версия, reload)
+echo "[*] Автоматическое обновление конфигурации DHSync на сервере..."
+UPDATE_CMD=("python3" "/data/scripts/update_dh_map.py" "--desc" "Карта дальнего горизонта (3000 блоков)")
+
+if [ -n "${GDRIVE_FILE_URL:-}" ]; then
+    UPDATE_CMD+=("--primary" "$GDRIVE_FILE_URL")
+fi
+
+if [ -n "${GITHUB_RELEASE_URL:-}" ]; then
+    UPDATE_CMD+=("--backup" "$GITHUB_RELEASE_URL")
+else
+    # По умолчанию используем прямую постоянную ссылку на файл в GitHub LFS репозитории
+    UPDATE_CMD+=("--backup" "https://media.githubusercontent.com/media/bogdan446/minecraft-ny-2027/main/DistantHorizons.sqlite")
+fi
+
+docker exec "$CONTAINER_NAME" "${UPDATE_CMD[@]}"
+
+# 4. Копируем файл из контейнера в рабочую директорию
 echo "[*] Копирование базы чанков в: $DEST_DIR"
 docker cp "${CONTAINER_NAME}:${SRC_SQLITE}" "${DEST_FILE}"
 
-# 4. Проверяем результат копирования
+# 5. Проверяем результат копирования
 if [ -f "$DEST_FILE" ]; then
     FILE_SIZE=$(ls -lh "$DEST_FILE" | awk '{print $5}')
     echo "[✔] Успешно! Файл скопирован: $DEST_FILE ($FILE_SIZE)"
@@ -44,14 +60,17 @@ else
     exit 1
 fi
 
-# 5. Проверка Git LFS (для файлов >100 МБ)
+# 6. Проверка Git LFS
 if ! command -v git-lfs &>/dev/null; then
-    echo "[!] Ошибка: git-lfs не найден. Файлы >100 МБ отклоняются GitHub без LFS."
-    echo "[*] Убедитесь, что git-lfs установлен в ~/.local/bin или через apt."
-    exit 1
+    if [ -x "$HOME/.local/bin/git-lfs" ]; then
+        export PATH="$HOME/.local/bin:$PATH"
+    else
+        echo "[!] Ошибка: git-lfs не найден."
+        exit 1
+    fi
 fi
 
-# 6. Инициализация Git и Git LFS в рабочей директории
+# 7. Инициализация Git и Git LFS в рабочей директории
 cd "$DEST_DIR"
 
 if [ ! -d ".git" ]; then
@@ -65,7 +84,6 @@ else
     fi
 fi
 
-# Настройки коммитера
 if [ -z "$(git config user.name)" ]; then
     git config user.name "bogdan446"
 fi
@@ -73,7 +91,6 @@ if [ -z "$(git config user.email)" ]; then
     git config user.email "bogdan446@users.noreply.github.com"
 fi
 
-# Защита от случайной отправки секретов (.env)
 if [ ! -f .gitignore ]; then
     cat << 'GITOID' > .gitignore
 .env
@@ -81,12 +98,10 @@ if [ ! -f .gitignore ]; then
 GITOID
 fi
 
-# Настройка Git LFS для тяжелой SQLite базы
 echo "[*] Настройка отслеживания базы через Git LFS..."
 git lfs install --local
 git lfs track "DistantHorizons.sqlite"
 
-# 7. Индексация и создание коммита
 git add .gitignore .gitattributes copy_dh_map.sh
 git add "DistantHorizons.sqlite"
 
@@ -98,9 +113,8 @@ else
     git commit -m "chore: update DistantHorizons.sqlite cache [${TIMESTAMP}]"
 fi
 
-# 8. Отправка в удаленный репозиторий GitHub
+# 8. Отправка в GitHub
 echo "[*] Подготовка к отправке изменений в GitHub..."
-
 PUSH_TARGET="origin"
 
 if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -116,6 +130,7 @@ echo "[*] Выполняется git push..."
 if git push -u "$PUSH_TARGET" main; then
     echo ""
     echo "[✔] Успешно! Файл отправлен в репозиторий: https://github.com/bogdan446/minecraft-ny-2027"
+    echo "[✔] Все метаданные DHSync обновлены и сервер перезагружен!"
 else
     PUSH_STATUS=$?
     echo ""
@@ -126,7 +141,6 @@ else
     echo "      $(cat ~/.ssh/id_github.pub 2>/dev/null || true)"
     echo ""
     echo "    Вариант 2 (GitHub Personal Access Token):"
-    echo "      export GITHUB_TOKEN=ghp_ваш_токен"
-    echo "      или сохраните в файл: ${DEST_DIR}/.env (строка: GITHUB_TOKEN=ghp_...)"
+    echo "      Запишите в ${DEST_DIR}/.env строку: GITHUB_TOKEN=ghp_ваш_токен"
     exit $PUSH_STATUS
 fi
