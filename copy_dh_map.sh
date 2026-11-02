@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# 0. Окружение: гарантируем доступность git-lfs и bin в PATH
+# 0. Окружение: гарантируем доступность git-lfs и бинарников в PATH
 export PATH="$HOME/.local/bin:$PATH"
 
 # Настройки контейнера и путей
@@ -10,9 +10,10 @@ SRC_SQLITE="/data/world/data/DistantHorizons.sqlite"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${SCRIPT_DIR}"
 DEST_FILE="${DEST_DIR}/DistantHorizons.sqlite"
-REPO_URL="https://github.com/bogdan446/minecraft-ny-2027.git"
+REPO_HTTPS="https://github.com/bogdan446/minecraft-ny-2027.git"
+REPO_SSH="git@github.com:bogdan446/minecraft-ny-2027.git"
 
-# Подгрузка локального .env при наличии (для GITHUB_TOKEN)
+# Подгрузка локального .env при наличии (например, GITHUB_TOKEN=ghp_...)
 if [ -f "${DEST_DIR}/.env" ]; then
     # shellcheck disable=SC1091
     source "${DEST_DIR}/.env"
@@ -46,7 +47,7 @@ fi
 # 5. Проверка Git LFS (для файлов >100 МБ)
 if ! command -v git-lfs &>/dev/null; then
     echo "[!] Ошибка: git-lfs не найден. Файлы >100 МБ отклоняются GitHub без LFS."
-    echo "[*] Установите git-lfs в ~/.local/bin или через apt."
+    echo "[*] Убедитесь, что git-lfs установлен в ~/.local/bin или через apt."
     exit 1
 fi
 
@@ -56,15 +57,15 @@ cd "$DEST_DIR"
 if [ ! -d ".git" ]; then
     echo "[*] Инициализация Git-репозитория в $DEST_DIR..."
     git init -b main
-    git remote add origin "$REPO_URL"
+    git remote add origin "$REPO_HTTPS"
 else
     CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || true)
     if [ -z "$CURRENT_REMOTE" ]; then
-        git remote add origin "$REPO_URL"
+        git remote add origin "$REPO_HTTPS"
     fi
 fi
 
-# Обеспечиваем наличие базовых настроек коммитера
+# Настройки коммитера
 if [ -z "$(git config user.name)" ]; then
     git config user.name "bogdan446"
 fi
@@ -90,7 +91,7 @@ git add .gitignore .gitattributes copy_dh_map.sh
 git add "DistantHorizons.sqlite"
 
 if git diff --staged --quiet; then
-    echo "[ℹ] Изменений в файле DistantHorizons.sqlite не зафиксировано, коммит пропущен."
+    echo "[ℹ] Изменений в файле DistantHorizons.sqlite не зафиксировано."
 else
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[*] Фиксация изменений в коммите..."
@@ -98,24 +99,34 @@ else
 fi
 
 # 8. Отправка в удаленный репозиторий GitHub
-echo "[*] Отправка изменений в GitHub ($REPO_URL)..."
+echo "[*] Подготовка к отправке изменений в GitHub..."
 
-# Если передан GITHUB_TOKEN, используем его для авторизации
 PUSH_TARGET="origin"
+
 if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "[*] Используется GITHUB_TOKEN для HTTPS авторизации..."
     PUSH_TARGET="https://${GITHUB_TOKEN}@github.com/bogdan446/minecraft-ny-2027.git"
+elif ssh -T -o BatchMode=yes -o ConnectTimeout=3 git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    echo "[*] Обнаружена активная авторизация по SSH. Отправка через git@github.com..."
+    git remote set-url origin "$REPO_SSH"
+    PUSH_TARGET="origin"
 fi
 
+echo "[*] Выполняется git push..."
 if git push -u "$PUSH_TARGET" main; then
-    echo "[✔] Успешно! Файл отправлен в репозиторий: $REPO_URL"
+    echo ""
+    echo "[✔] Успешно! Файл отправлен в репозиторий: https://github.com/bogdan446/minecraft-ny-2027"
 else
     PUSH_STATUS=$?
     echo ""
     echo "[!] Ошибка: Не удалось выполнить git push (код $PUSH_STATUS)."
-    echo "[*] Подсказка по авторизации:"
-    echo "    1. Если у вас есть GitHub Personal Access Token (PAT):"
-    echo "       export GITHUB_TOKEN=ghp_ваш_токен"
-    echo "       или запишите его в файл: ${DEST_DIR}/.env (строка: GITHUB_TOKEN=ghp_...)"
-    echo "    2. Либо настройте SSH-ключ с доступом к github.com и смените URL на git@github.com:..."
+    echo "[*] Способы быстрой авторизации:"
+    echo "    Вариант 1 (SSH-ключ - рекомендуется):"
+    echo "      Добавьте открытый ключ сервера в GitHub -> Settings -> SSH Keys:"
+    echo "      $(cat ~/.ssh/id_github.pub 2>/dev/null || true)"
+    echo ""
+    echo "    Вариант 2 (GitHub Personal Access Token):"
+    echo "      export GITHUB_TOKEN=ghp_ваш_токен"
+    echo "      или сохраните в файл: ${DEST_DIR}/.env (строка: GITHUB_TOKEN=ghp_...)"
     exit $PUSH_STATUS
 fi
